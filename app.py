@@ -15,7 +15,7 @@ FOLDER_ID = "1gyuybMhyMQp3N-N2cmSrOgKBUf6iQ85y"
 # --- SECURITY ---
 def check_password():
     def password_entered():
-        if st.session_state["password"] == "Silchar123":
+        if st.session_state["password"] == "cbi@123":
             st.session_state["password_correct"] = True
             del st.session_state["password"]
         else:
