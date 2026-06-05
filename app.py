@@ -14,7 +14,7 @@ FOLDER_ID = "1gyuybMhyMQp3N-N2cmSrOgKBUf6iQ85y"
 # --- SECURITY ---
 def check_password():
     def password_entered():
-        if st.session_state["password"] == "Silchar123":
+        if st.session_state["password"] == "cbi@123":
             st.session_state["password_correct"] = True
             del st.session_state["password"]
         else:
@@ -40,13 +40,11 @@ def get_drive_service():
 
 def search_pdfs(query):
     service = get_drive_service()
-    # Find PDFs in your folder
     results = service.files().list(q=f"'{FOLDER_ID}' in parents and mimeType='application/pdf'", fields="files(id, name)").execute()
     files = results.get('files', [])
     
     found_snippets = []
     for file in files:
-        # Download the file to memory
         request = service.files().get_media(fileId=file['id'])
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
@@ -54,13 +52,12 @@ def search_pdfs(query):
         while done is False:
             status, done = downloader.next_chunk()
             
-        # Read the PDF text
         fh.seek(0)
         reader = PyPDF2.PdfReader(fh)
         for page_num, page in enumerate(reader.pages):
             text = page.extract_text()
             if text and query.lower() in text.lower():
-                found_snippets.append(f"**Found in: {file['name']} (Page {page_num + 1})**\n\n... {text[:300]} ...")
+                found_snippets.append(f"**Found in: {file['name']} (Page {page_num + 1})**\n\n... {text[:400]} ...")
     
     return found_snippets
 
@@ -69,17 +66,36 @@ if check_password():
     st.title("🏦 Circular Assistant")
     st.write("Search the latest guidelines and circulars.")
 
-    query = st.text_input("🔍 Search Keyword (e.g., 'loan limit', 'audit'):")
+    # Department Selection Structure
+    departments = {
+        "Operations": ["Account Opening", "KYC Norms", "Cash Handling", "Clearing"],
+        "Credit": ["Retail Loans / Housing", "Agriculture / KCC", "MSME", "Recovery"],
+        "HR or Staff Benefits": ["Leave Policy", "LFC / Travel", "Medical Benefits"],
+        "Audit": ["Concurrent Audit", "Compliance Reports", "Risk Management"],
+        "Miscellaneous": ["General Admin", "IT Security", "Premises"]
+    }
+
+    col1, col2 = st.columns(2)
+    with col1:
+        selected_dept = st.selectbox("Select Department", list(departments.keys()))
+    with col2:
+        selected_sub = st.selectbox("Select Sub-Department", departments[selected_dept])
+
+    st.divider()
+
+    st.info("💡 Tip: Type a single keyword (like 'audit' or 'leave') rather than a full sentence.")
+    query = st.text_input(f"🔍 Search within {selected_sub}:")
     
-    if st.button("Search Google Drive", use_container_width=True):
+    if st.button("Search Circulars", use_container_width=True):
         if query:
-            with st.spinner("Securely reading PDFs from Google Drive..."):
+            with st.spinner("Scanning Google Drive PDFs..."):
                 results = search_pdfs(query)
                 if results:
-                    st.success("Found matching circulars!")
+                    st.success(f"Found {len(results)} matching sections!")
                     for res in results:
-                        st.info(res)
+                        st.write(res)
+                        st.divider()
                 else:
-                    st.warning("No matches found in your PDFs.")
+                    st.warning("No matches found. Try a different keyword.")
         else:
             st.warning("Please type a search word first.")
