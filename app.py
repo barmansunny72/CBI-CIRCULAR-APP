@@ -1,15 +1,22 @@
 import streamlit as st
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+import io
+import PyPDF2
 
-# Configure the app for mobile screens
 st.set_page_config(page_title="CBI Silchar - Circular Assistant", page_icon="🏦", layout="centered")
 
-# --- SECURITY: Simple Login Screen ---
+# --- PUT YOUR FOLDER ID HERE ---
+FOLDER_ID = "1gyuybMhyMQp3N-N2cmSrOgKBUf6iQ85y"
+# -------------------------------
+
+# --- SECURITY ---
 def check_password():
-    """Returns True if the user has entered the correct password."""
     def password_entered():
-        if st.session_state["password"] == "Silchar123": # You can change this password
+        if st.session_state["password"] == "Silchar123":
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Don't store password
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
@@ -18,42 +25,61 @@ def check_password():
         return False
     elif not st.session_state["password_correct"]:
         st.text_input("Enter Branch Password", type="password", on_change=password_entered, key="password")
-        st.error("Incorrect Password. Please try again.")
+        st.error("Incorrect Password.")
         return False
     return True
 
-# --- MAIN APP UI ---
+# --- GOOGLE DRIVE CONNECTION ---
+@st.cache_resource
+def get_drive_service():
+    creds = service_account.Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=['https://www.googleapis.com/auth/drive.readonly']
+    )
+    return build('drive', 'v3', credentials=creds)
+
+def search_pdfs(query):
+    service = get_drive_service()
+    # Find PDFs in your folder
+    results = service.files().list(q=f"'{FOLDER_ID}' in parents and mimeType='application/pdf'", fields="files(id, name)").execute()
+    files = results.get('files', [])
+    
+    found_snippets = []
+    for file in files:
+        # Download the file to memory
+        request = service.files().get_media(fileId=file['id'])
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while done is False:
+            status, done = downloader.next_chunk()
+            
+        # Read the PDF text
+        fh.seek(0)
+        reader = PyPDF2.PdfReader(fh)
+        for page_num, page in enumerate(reader.pages):
+            text = page.extract_text()
+            if text and query.lower() in text.lower():
+                found_snippets.append(f"**Found in: {file['name']} (Page {page_num + 1})**\n\n... {text[:300]} ...")
+    
+    return found_snippets
+
+# --- APP INTERFACE ---
 if check_password():
     st.title("🏦 Circular Assistant")
     st.write("Search the latest guidelines and circulars.")
 
-    # Department Selection Structure
-    departments = {
-        "Operations": ["Account Opening", "KYC Norms", "Cash Handling", "Clearing"],
-        "Credit": ["Retail Loans / Housing", "Agriculture / KCC", "MSME", "Recovery"],
-        "HR or Staff Benefits": ["Leave Policy", "LFC / Travel", "Medical Benefits"],
-        "Audit": ["Concurrent Audit", "Compliance Reports", "Risk Management"],
-        "Miscellaneous": ["General Admin", "IT Security", "Premises"]
-    }
-
-    # Dropdowns for mobile-friendly filtering
-    col1, col2 = st.columns(2)
-    with col1:
-        selected_dept = st.selectbox("Select Department", list(departments.keys()))
-    with col2:
-        selected_sub = st.selectbox("Select Sub-Department", departments[selected_dept])
-
-    st.divider()
-
-    # The Search Interface
-    query = st.text_area("🔍 Ask your doubt:", placeholder="e.g., What is the maximum quantum of staff housing loan?")
+    query = st.text_input("🔍 Search Keyword (e.g., 'loan limit', 'audit'):")
     
-    if st.button("Search Circulars", use_container_width=True):
+    if st.button("Search Google Drive", use_container_width=True):
         if query:
-            with st.spinner("Scanning circulars..."):
-                # NOTE: This is where we will integrate the Google Drive PDF reader logic
-                st.success("Draft Answer Example:")
-                st.write(f"**Based on {selected_dept} > {selected_sub} circulars:**")
-                st.info("The maximum quantum of staff housing loan is up to 75 Lakhs, subject to 60 months' gross salary. \n\n*Source: Circular 2026/14 (Paragraph 3.2)*")
+            with st.spinner("Securely reading PDFs from Google Drive..."):
+                results = search_pdfs(query)
+                if results:
+                    st.success("Found matching circulars!")
+                    for res in results:
+                        st.info(res)
+                else:
+                    st.warning("No matches found in your PDFs.")
         else:
-            st.warning("Please type a question first.")
+            st.warning("Please type a search word first.")
