@@ -51,16 +51,27 @@ def get_drive_service():
 
 def get_all_pdf_files_in_folder(service, folder_id):
     files = []
-    results = service.files().list(q=f"'{folder_id}' in parents and (mimeType='application/pdf' or mimeType='application/vnd.google-apps.folder') and trashed=false", fields="files(id, name, mimeType)").execute()
-    for item in results.get('files', []):
-        if item['mimeType'] == 'application/pdf':
-            files.append(item)
-        elif item['mimeType'] == 'application/vnd.google-apps.folder':
-            files.extend(get_all_pdf_files_in_folder(service, item['id']))
-    return files
+    try:
+        # UPGRADED: Added Enterprise "Shared Drive" support to bypass workspace blocks
+        results = service.files().list(
+            q=f"'{folder_id}' in parents and (mimeType='application/pdf' or mimeType='application/vnd.google-apps.folder') and trashed=false", 
+            fields="files(id, name, mimeType)",
+            supportsAllDrives=True, 
+            includeItemsFromAllDrives=True
+        ).execute()
+        
+        for item in results.get('files', []):
+            if item['mimeType'] == 'application/pdf':
+                files.append(item)
+            elif item['mimeType'] == 'application/vnd.google-apps.folder':
+                files.extend(get_all_pdf_files_in_folder(service, item['id']))
+        return files
+    except Exception as e:
+        # HUMAN READABLE ERROR CATCHER
+        st.error(f"🚨 **Google Drive Connection Blocked!**\n\nThe app tried to open Folder ID: `{folder_id}`, but Google stopped it.\n\n**Please check:**\n1. Did you share this folder with the Robot Email?\n2. Did you accidentally paste the whole web link instead of just the ID?\n\n*(Technical detail: {e})*")
+        st.stop()
 
 # --- 🧠 THE GEMINI VISION ENGINE ---
-# We use @cache_resource so it only uploads to Gemini once per hour!
 @st.cache_resource(ttl=3600, show_spinner=False)
 def load_folder_to_gemini(folder_id):
     service = get_drive_service()
@@ -69,7 +80,6 @@ def load_folder_to_gemini(folder_id):
     gemini_uploaded_files = []
     
     for f in drive_files:
-        # 1. Download file securely from Drive
         request = service.files().get_media(fileId=f['id'])
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
@@ -77,15 +87,12 @@ def load_folder_to_gemini(folder_id):
         while not done:
             _, done = downloader.next_chunk()
             
-        # 2. Save it temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(fh.getvalue())
             tmp_path = tmp.name
             
-        # 3. Upload directly to Gemini's multimodal brain
         g_file = genai.upload_file(path=tmp_path, display_name=f['name'])
         
-        # 4. Wait a few seconds for Gemini to OCR and process the images
         while g_file.state.name == 'PROCESSING':
             time.sleep(2)
             g_file = genai.get_file(g_file.name)
@@ -93,7 +100,6 @@ def load_folder_to_gemini(folder_id):
         if g_file.state.name != 'FAILED':
             gemini_uploaded_files.append(g_file)
             
-        # 5. Clean up temporary file
         os.remove(tmp_path)
         
     return gemini_uploaded_files
@@ -137,13 +143,19 @@ else:
             st.rerun()
             
         st.divider()
-        # UPGRADED SYNC BUTTON: Clears both data caches and file caches
         if st.button("🔄 Sync New Circulars"):
             st.cache_resource.clear()
             st.cache_data.clear()
             st.success("Database synced! New circulars are now active.")
 
     st.title(f"Assistant: {dept}")
+    
+    # NEW SAFETY NET: Stops the app from crashing if you haven't put an ID in yet
+    active_folder_id = FOLDER_MAP[dept]
+    if "PASTE" in active_folder_id:
+        st.warning(f"⚠️ **Stop!** You haven't linked the Google Drive folder for **{dept}** yet. Please paste the ID into your GitHub code.")
+        st.stop()
+        
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
@@ -153,16 +165,13 @@ else:
         
         with st.chat_message("assistant"):
             with st.spinner("Analyzing physical and digital circulars..."):
-                # Fetch the raw files uploaded to Gemini
-                gemini_files = load_folder_to_gemini(FOLDER_MAP[dept])
+                gemini_files = load_folder_to_gemini(active_folder_id)
                 
-                # Compress recent chat history
                 history_text = ""
                 for msg in st.session_state.messages[-6:]: 
                     role_name = u['name'] if msg["role"] == "user" else "AI"
                     history_text += f"{role_name}: {msg['content']}\n"
                 
-                # The Ultimate Multimodal Prompt
                 prompt_text = f"""
                 You are Gemini, acting as a highly intelligent, friendly colleague at the Central Bank of India, Silchar Branch. 
                 You are helping {u['name']}. Speak to them naturally and warmly.
@@ -183,7 +192,6 @@ else:
                 4. If the answer isn't in the circulars, politely say you can't find it.
                 """
                 
-                # We pass the prompt AND the actual file objects to Gemini
                 contents = [prompt_text] + gemini_files
                 
                 try:
