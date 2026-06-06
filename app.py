@@ -4,10 +4,9 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import google.generativeai as genai
 import io
+import PyPDF2
 import json
 import os
-import tempfile
-import time
 
 # --- UI THEME ---
 st.set_page_config(page_title="CBI Branch Assistant", page_icon="🏦", layout="wide")
@@ -39,7 +38,8 @@ def save_data(filepath, data):
 
 # --- AI & DRIVE SETUP ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-2.5-flash')
+# Using 1.5-flash because it natively supports reading raw PDF bytes
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 @st.cache_resource
 def get_drive_service():
@@ -52,7 +52,6 @@ def get_drive_service():
 def get_all_pdf_files_in_folder(service, folder_id):
     files = []
     try:
-        # UPGRADED: Added Enterprise "Shared Drive" support to bypass workspace blocks
         results = service.files().list(
             q=f"'{folder_id}' in parents and (mimeType='application/pdf' or mimeType='application/vnd.google-apps.folder') and trashed=false", 
             fields="files(id, name, mimeType)",
@@ -67,19 +66,18 @@ def get_all_pdf_files_in_folder(service, folder_id):
                 files.extend(get_all_pdf_files_in_folder(service, item['id']))
         return files
     except Exception as e:
-        # HUMAN READABLE ERROR CATCHER
-        st.error(f"🚨 **Google Drive Connection Blocked!**\n\nThe app tried to open Folder ID: `{folder_id}`, but Google stopped it.\n\n**Please check:**\n1. Did you share this folder with the Robot Email?\n2. Did you accidentally paste the whole web link instead of just the ID?\n\n*(Technical detail: {e})*")
+        st.error(f"🚨 Google Drive Connection Error on Folder ID: `{folder_id}`.\n\nDetails: {e}")
         st.stop()
 
-# --- 🧠 THE GEMINI VISION ENGINE ---
-@st.cache_resource(ttl=3600, show_spinner=False)
-def load_folder_to_gemini(folder_id):
+# --- ⚡ THE INLINE BYTES ENGINE (NO UPLOADING NEEDED) ---
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_and_prepare_documents(folder_id):
     service = get_drive_service()
-    drive_files = get_all_pdf_files_in_folder(service, folder_id)
+    files = get_all_pdf_files_in_folder(service, folder_id)
     
-    gemini_uploaded_files = []
-    
-    for f in drive_files:
+    database = []
+    for f in files:
+        # Download the raw file bytes securely
         request = service.files().get_media(fileId=f['id'])
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
@@ -87,22 +85,62 @@ def load_folder_to_gemini(folder_id):
         while not done:
             _, done = downloader.next_chunk()
             
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(fh.getvalue())
-            tmp_path = tmp.name
-            
-        g_file = genai.upload_file(path=tmp_path, display_name=f['name'])
+        pdf_bytes = fh.getvalue()
         
-        while g_file.state.name == 'PROCESSING':
-            time.sleep(2)
-            g_file = genai.get_file(g_file.name)
+        # Try to extract text just for our local search algorithm to use
+        extracted_text = ""
+        try:
+            fh.seek(0)
+            reader = PyPDF2.PdfReader(fh)
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    extracted_text += text + "\n"
+        except:
+            pass # If it's a pure scanned image, text remains empty, but we still have the raw bytes!
             
-        if g_file.state.name != 'FAILED':
-            gemini_uploaded_files.append(g_file)
-            
-        os.remove(tmp_path)
+        database.append({
+            'name': f['name'],
+            'text': extracted_text.lower(),
+            'bytes': pdf_bytes
+        })
         
-    return gemini_uploaded_files
+    return database
+
+def get_top_documents(query, database, context_string):
+    stopwords = ['what', 'is', 'the', 'for', 'a', 'an', 'of', 'in', 'to', 'and', 'how', 'are', 'about', 'details', 'tell', 'me', 'can', 'you', 'find']
+    query_words = [w.lower() for w in query.replace('?', '').split() if w.lower() not in stopwords]
+    exact_query = query.lower().replace('?', '').strip()
+
+    scored_docs = []
+    for doc in database:
+        score = 0
+        name_lower = doc['name'].lower()
+        text_lower = doc['text']
+        
+        # 1. FILENAME BOOST: Crucial for finding scanned PDFs!
+        for qw in query_words:
+            if qw in name_lower:
+                score += 2000
+                
+        # 2. Exact phrase in text
+        if exact_query in text_lower:
+            score += 1000
+            
+        # 3. Context/Category boost
+        if context_string.lower() in name_lower or context_string.lower() in text_lower:
+            score += 300
+            
+        # 4. Keyword frequency
+        for qw in query_words:
+            score += (text_lower.count(qw) * 10)
+            
+        if score > 0:
+            scored_docs.append({'score': score, 'doc': doc})
+            
+    scored_docs.sort(key=lambda x: x['score'], reverse=True)
+    # We return the Top 2 most relevant PDFs to send to the AI
+    return [item['doc'] for item in scored_docs[:2]]
 
 # --- UI ---
 if "user_data" not in st.session_state:
@@ -112,7 +150,7 @@ if "user_data" not in st.session_state:
     
     with tab1:
         login_pf = st.text_input("PF Number", key="login")
-        if st.button("Log In"):
+        if st.button("Log In", type="primary"):
             if login_pf in users_db:
                 st.session_state["user_data"] = {"name": users_db[login_pf], "pf": login_pf}
                 st.session_state["messages"] = load_data(CHATS_FILE).get(login_pf, [])
@@ -144,13 +182,11 @@ else:
             
         st.divider()
         if st.button("🔄 Sync New Circulars"):
-            st.cache_resource.clear()
             st.cache_data.clear()
             st.success("Database synced! New circulars are now active.")
 
     st.title(f"Assistant: {dept}")
     
-    # NEW SAFETY NET: Stops the app from crashing if you haven't put an ID in yet
     active_folder_id = FOLDER_MAP[dept]
     if "PASTE" in active_folder_id:
         st.warning(f"⚠️ **Stop!** You haven't linked the Google Drive folder for **{dept}** yet. Please paste the ID into your GitHub code.")
@@ -164,43 +200,55 @@ else:
         with st.chat_message("user"): st.markdown(query)
         
         with st.chat_message("assistant"):
-            with st.spinner("Analyzing physical and digital circulars..."):
-                gemini_files = load_folder_to_gemini(active_folder_id)
+            with st.spinner("Scanning files and reading selected PDFs..."):
+                # Fetch all documents in memory
+                database = fetch_and_prepare_documents(active_folder_id)
                 
-                history_text = ""
-                for msg in st.session_state.messages[-6:]: 
-                    role_name = u['name'] if msg["role"] == "user" else "AI"
-                    history_text += f"{role_name}: {msg['content']}\n"
+                # Find the top 2 documents based on name and text
+                top_docs = get_top_documents(query, database, sub if sub != "General" else dept)
                 
-                prompt_text = f"""
-                You are Gemini, acting as a highly intelligent, friendly colleague at the Central Bank of India, Silchar Branch. 
-                You are helping {u['name']}. Speak to them naturally and warmly.
-                
-                --- CHAT HISTORY ---
-                {history_text}
-                
-                --- ATTACHED DOCUMENTS ---
-                I have directly attached the official PDF circulars to this prompt. You can see their display names. 
-                The user is specifically interested in the category: "{sub}". Pay extra attention to documents that match that topic, but search all attached files.
-                
-                USER'S QUESTION: {query}
-                
-                RULES: 
-                1. Base your answer strictly on the attached documents. Read images, tables, and scanned text carefully.
-                2. Be conversational but concise. 
-                3. Always cite the Document display name so {u['name']} can verify it.
-                4. If the answer isn't in the circulars, politely say you can't find it.
-                """
-                
-                contents = [prompt_text] + gemini_files
-                
-                try:
-                    resp = model.generate_content(contents).text
-                    st.markdown(resp)
+                if not top_docs:
+                    st.markdown("I couldn't find any circulars matching those keywords. Try different search terms.")
+                    st.session_state.messages.append({"role": "assistant", "content": "I couldn't find any circulars matching those keywords. Try different search terms."})
+                else:
+                    doc_names = [d['name'] for d in top_docs]
+                    st.write(f"🧠 *Running Native OCR on:* **{', '.join(doc_names)}**")
                     
-                    st.session_state.messages.append({"role": "assistant", "content": resp})
-                    all_chats = load_data(CHATS_FILE)
-                    all_chats[u['pf']] = st.session_state.messages
-                    save_data(CHATS_FILE, all_chats)
-                except Exception as e:
-                    st.error(f"An error occurred while reading the PDFs: {e}")
+                    history_text = ""
+                    for msg in st.session_state.messages[-6:]: 
+                        role_name = u['name'] if msg["role"] == "user" else "AI"
+                        history_text += f"{role_name}: {msg['content']}\n"
+                    
+                    prompt_text = f"""
+                    You are Gemini, a highly intelligent, friendly colleague at the Central Bank of India, Silchar Branch. 
+                    You are helping {u['name']}. Speak to them naturally and warmly.
+                    
+                    --- CHAT HISTORY ---
+                    {history_text}
+                    
+                    --- INSTRUCTIONS ---
+                    I have attached the raw PDF files directly to this prompt. 
+                    1. Run your native OCR to read the tables, text, and scanned images in these attached files.
+                    2. Answer the user's question ({query}) based ONLY on these files.
+                    3. Be conversational but concise. 
+                    4. Always cite the Document Name at the end of your answer.
+                    """
+                    
+                    # We pass the prompt AND the raw bytes directly to Gemini!
+                    contents = [prompt_text]
+                    for doc in top_docs:
+                        contents.append({
+                            "mime_type": "application/pdf",
+                            "data": doc['bytes']
+                        })
+                    
+                    try:
+                        resp = model.generate_content(contents).text
+                        st.markdown(resp)
+                        
+                        st.session_state.messages.append({"role": "assistant", "content": resp})
+                        all_chats = load_data(CHATS_FILE)
+                        all_chats[u['pf']] = st.session_state.messages
+                        save_data(CHATS_FILE, all_chats)
+                    except Exception as e:
+                        st.error(f"An error occurred while generating the answer: {e}")
