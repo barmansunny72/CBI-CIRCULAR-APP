@@ -10,13 +10,13 @@ import PyPDF2
 st.set_page_config(page_title="CBI Circular Assistant", page_icon="🏦", layout="wide")
 
 # --- PUT YOUR FOLDER ID HERE ---
-FOLDER_ID = "PASTE_YOUR_FOLDER_ID_HERE"
+FOLDER_ID = "1gyuybMhyMQp3N-N2cmSrOgKBUf6iQ85y"
 # -------------------------------
 
 # --- SECURITY ---
 def check_password():
     def password_entered():
-        if st.session_state["password"] == "Silchar123":
+        if st.session_state["password"] == "cbi@123":
             st.session_state["password_correct"] = True
             del st.session_state["password"]
         else:
