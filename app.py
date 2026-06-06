@@ -39,7 +39,7 @@ def save_data(filepath, data):
 # --- AI & DRIVE SETUP ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 # Using 1.5-flash because it natively supports reading raw PDF bytes
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 @st.cache_resource
 def get_drive_service():
