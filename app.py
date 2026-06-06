@@ -82,8 +82,8 @@ def find_relevant_pages(query, all_pages):
         if any(kw in page.lower() for kw in keywords):
             relevant_pages.append(page)
             
-    # Only return the top 10 most relevant pages so we don't crash the free AI limit
-    return "\n".join(relevant_pages[:10])
+   # Only return the top 3 most relevant pages so we don't crash the free AI limit
+return "\n".join(relevant_pages[:3])
 
 # --- APP INTERFACE ---
 if check_password():
@@ -132,26 +132,31 @@ if check_password():
                     st.warning("I couldn't find any circulars mentioning those exact keywords. Try simplifying your search words.")
                 else:
                     st.write("🧠 Reading policies and generating response...")
-                    prompt = f"""
-                    You are a professional banking assistant for the Central Bank of India. 
-                    Read the following official bank circular pages carefully.
-                    
-                    BANK CIRCULARS:
-                    {document_text}
-                    
-                    USER QUESTION: {query}
-                    
-                    INSTRUCTIONS:
-                    1. Answer the user's question clearly, professionally, and step-by-step based ONLY on the provided circular text.
-                    2. If the answer is not contained in the text, you MUST say "I cannot find the exact answer to this in the uploaded circulars." Do not guess.
-                    3. Always mention the Document Name and Page Number you got the answer from.
-                    """
-                    response = model.generate_content(prompt)
-                    
-                    status.update(label="✅ Answer Generated!", state="complete", expanded=False)
+                prompt = f"""
+                You are a professional banking assistant for the Central Bank of India. 
+                Read the following official bank circular pages carefully.
                 
+                BANK CIRCULARS:
+                {document_text}
+                
+                USER QUESTION: {query}
+                
+                INSTRUCTIONS:
+                1. Answer the user's question clearly, professionally, and step-by-step based ONLY on the provided circular text.
+                2. If the answer is not contained in the text, you MUST say "I cannot find the exact answer to this in the uploaded circulars." Do not guess.
+                3. Always mention the Document Name and Page Number you got the answer from.
+                """
+                
+                try:
+                    response = model.generate_content(prompt)
+                    status.update(label="✅ Answer Generated!", state="complete", expanded=False)
                     st.markdown("### 📋 Official Policy Breakdown:")
                     st.info(response.text)
                     st.caption("⚠️ Note: Always verify critical data with the original physical circular.")
-        else:
-            st.warning("Please type a question first.")
+                    
+                except Exception as e:
+                    status.update(label="⚠️ Network Busy", state="error", expanded=False)
+                    if "429" in str(e) or "ResourceExhausted" in str(e):
+                        st.error("⏳ The AI servers are currently busy (Free Tier Limit). Please wait 60 seconds and try your question again.")
+                    else:
+                        st.error(f"An unexpected error occurred: {e}")
