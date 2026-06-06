@@ -34,9 +34,8 @@ def check_password():
         return False
     return True
 
-# --- AI & DRIVE SETUP (UPGRADED TO PRO MODEL) ---
+# --- AI & DRIVE SETUP ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-# Using the PRO model because you are on the paid tier for maximum intelligence
 model = genai.GenerativeModel('gemini-2.5-pro')
 
 @st.cache_resource
@@ -67,39 +66,46 @@ def get_all_pdf_pages():
         for page_num, page in enumerate(reader.pages):
             text = page.extract_text()
             if text:
-                # Store the Document Name, Page Number, and Text
+                # The first line always contains the Document Name
                 all_pages.append(f"--- Document: {file['name']} (Page {page_num + 1}) ---\n{text}")
                 
     return all_pages
 
-# --- NEW: THE UNLOCKED SMART LIBRARIAN ---
+# --- UPGRADED LIBRARIAN ALGORITHM ---
 def find_relevant_pages(query, all_pages):
-    # Remove common filler words so we only search for the core subject
-    stopwords = ['what', 'is', 'the', 'for', 'a', 'an', 'of', 'in', 'to', 'and', 'how', 'are', 'about', 'details', 'my', 'i', 'need', 'tell', 'me', 'can', 'you', 'find']
+    # Added banking-specific filler words to ignore
+    stopwords = ['what', 'is', 'the', 'for', 'a', 'an', 'of', 'in', 'to', 'and', 'how', 'are', 'about', 'details', 'policy', 'rules', 'guidelines', 'bank', 'branch', 'staff', 'cbi', 'central']
     keywords = [word.lower() for word in query.replace('?', '').split() if word.lower() not in stopwords and len(word) > 2]
     
     scored_pages = []
+    phrase = " ".join(keywords)
     
     for page in all_pages:
         score = 0
         page_lower = page.lower()
         
-        # Give massive bonus points if the keywords appear right next to each other
-        for kw in keywords:
-            score += page_lower.count(kw)
+        # 1. Distinct Match Rule: Count how many DIFFERENT keywords are on this page
+        matches = sum(1 for kw in keywords if kw in page_lower)
         
-        # Exact phrase matching bonus (e.g. "staff transfer policy")
-        phrase = " ".join(keywords)
-        if phrase in page_lower:
-            score += 50 
+        if matches > 0:
+            score += (matches * 20) # Base points
             
-        if score > 0:
+            # 2. Exact phrase bonus (e.g., finding exactly "rent reimbursement")
+            if phrase in page_lower:
+                score += 100 
+                
+            # 3. Document Title Bonus: Check if the file name itself contains the keyword
+            first_line = page_lower.split('\n')[0] 
+            for kw in keywords:
+                if kw in first_line:
+                    score += 200 # Massive bonus for matching the title
+                    
             scored_pages.append({'score': score, 'text': page})
             
-    # Sort the pages so the highest scores are at the top
+    # Sort highest scores to the top
     scored_pages.sort(key=lambda x: x['score'], reverse=True)
     
-    # PAID TIER UPGRADE: Grab the top 25 pages of data to give the AI massive context
+    # Grab the top 25 most relevant pages
     top_pages = [page['text'] for page in scored_pages[:25]]
     
     return "\n".join(top_pages)
@@ -143,14 +149,14 @@ if check_password():
                 st.write("📥 Loading PDFs from Google Drive...")
                 all_pages = get_all_pdf_pages()
                 
-                st.write("🔍 Gathering comprehensive context...")
+                st.write("🔍 Calculating relevance scores across all files...")
                 document_text = find_relevant_pages(query, all_pages)
                 
                 if not document_text.strip():
                     status.update(label="⚠️ No matches found", state="error", expanded=False)
                     st.warning("I couldn't find any circulars mentioning those exact keywords. Try simplifying your search words.")
                 else:
-                    st.write("🧠 Pro AI reading policies and connecting data...")
+                    st.write("🧠 Pro AI reading top-scored documents...")
                     prompt = f"""
                     You are a professional banking assistant for the Central Bank of India. 
                     Read the following official bank circular pages carefully.
