@@ -152,6 +152,13 @@ else:
         dept = st.selectbox("Department", list(FOLDER_MAP.keys()))
         sub = st.selectbox("Category", ["General"] + (["Retail", "MSME", "Agri", "Master Credit Policy"] if dept == "Credit/Advance" else []))
         if st.button("Log Out"): st.session_state.clear(); st.rerun()
+            
+        # ADD THESE THREE LINES RIGHT HERE:
+        if st.button("🔄 Sync New Circulars"):
+            st.cache_data.clear()
+            st.success("Database synced! New circulars are now active.")
+            
+        st.divider()
 
     st.title(f"Assistant: {dept}")
     for msg in st.session_state.messages:
