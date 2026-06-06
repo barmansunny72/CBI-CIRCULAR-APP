@@ -5,6 +5,7 @@ from googleapiclient.http import MediaIoBaseDownload
 import google.generativeai as genai
 import io
 import PyPDF2
+import re
 
 # --- UI THEME UPGRADE ---
 st.set_page_config(page_title="CBI Circular Assistant", page_icon="🏦", layout="wide")
@@ -33,9 +34,10 @@ def check_password():
         return False
     return True
 
-# --- AI & DRIVE SETUP ---
+# --- AI & DRIVE SETUP (UPGRADED TO PRO MODEL) ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-2.5-flash')
+# Using the PRO model because you are on the paid tier for maximum intelligence
+model = genai.GenerativeModel('gemini-1.5-pro-latest')
 
 @st.cache_resource
 def get_drive_service():
@@ -65,21 +67,42 @@ def get_all_pdf_pages():
         for page_num, page in enumerate(reader.pages):
             text = page.extract_text()
             if text:
+                # Store the Document Name, Page Number, and Text
                 all_pages.append(f"--- Document: {file['name']} (Page {page_num + 1}) ---\n{text}")
                 
     return all_pages
 
+# --- NEW: THE UNLOCKED SMART LIBRARIAN ---
 def find_relevant_pages(query, all_pages):
-    stopwords = ['what', 'is', 'the', 'for', 'a', 'an', 'of', 'in', 'to', 'and', 'how', 'are', 'rules', 'policy', 'about', 'details']
+    # Remove common filler words so we only search for the core subject
+    stopwords = ['what', 'is', 'the', 'for', 'a', 'an', 'of', 'in', 'to', 'and', 'how', 'are', 'about', 'details', 'my', 'i', 'need', 'tell', 'me', 'can', 'you', 'find']
     keywords = [word.lower() for word in query.replace('?', '').split() if word.lower() not in stopwords and len(word) > 2]
     
-    relevant_pages = []
+    scored_pages = []
+    
     for page in all_pages:
-        if any(kw in page.lower() for kw in keywords):
-            relevant_pages.append(page)
+        score = 0
+        page_lower = page.lower()
+        
+        # Give massive bonus points if the keywords appear right next to each other
+        for kw in keywords:
+            score += page_lower.count(kw)
+        
+        # Exact phrase matching bonus (e.g. "staff transfer policy")
+        phrase = " ".join(keywords)
+        if phrase in page_lower:
+            score += 50 
             
-    # Properly indented return limiting to 3 pages
-    return "\n".join(relevant_pages[:3])
+        if score > 0:
+            scored_pages.append({'score': score, 'text': page})
+            
+    # Sort the pages so the highest scores are at the top
+    scored_pages.sort(key=lambda x: x['score'], reverse=True)
+    
+    # PAID TIER UPGRADE: Grab the top 25 pages of data to give the AI massive context
+    top_pages = [page['text'] for page in scored_pages[:25]]
+    
+    return "\n".join(top_pages)
 
 # --- APP INTERFACE ---
 if check_password():
@@ -101,7 +124,7 @@ if check_password():
         selected_sub = st.selectbox("Sub-Department", departments[selected_dept])
         
         st.divider()
-        st.success("🟢 System Online")
+        st.success("🟢 System Online (Pro Tier)")
 
     st.title("Smart Circular Assistant ✨")
     st.markdown("*Your AI-powered guide for internal banking policies and operational guidelines.*")
@@ -120,14 +143,14 @@ if check_password():
                 st.write("📥 Loading PDFs from Google Drive...")
                 all_pages = get_all_pdf_pages()
                 
-                st.write("🔍 Scanning for relevant paragraphs...")
+                st.write("🔍 Gathering comprehensive context...")
                 document_text = find_relevant_pages(query, all_pages)
                 
                 if not document_text.strip():
                     status.update(label="⚠️ No matches found", state="error", expanded=False)
                     st.warning("I couldn't find any circulars mentioning those exact keywords. Try simplifying your search words.")
                 else:
-                    st.write("🧠 Reading policies and generating response...")
+                    st.write("🧠 Pro AI reading policies and connecting data...")
                     prompt = f"""
                     You are a professional banking assistant for the Central Bank of India. 
                     Read the following official bank circular pages carefully.
@@ -138,9 +161,10 @@ if check_password():
                     USER QUESTION: {query}
                     
                     INSTRUCTIONS:
-                    1. Answer the user's question clearly, professionally, and step-by-step based ONLY on the provided circular text.
-                    2. If the answer is not contained in the text, you MUST say "I cannot find the exact answer to this in the uploaded circulars." Do not guess.
-                    3. Always mention the Document Name and Page Number you got the answer from.
+                    1. Answer the user's question comprehensively based ONLY on the provided circular text.
+                    2. Connect information across different documents if necessary.
+                    3. If the answer is not contained in the text, you MUST say "I cannot find the exact answer to this in the uploaded circulars." Do not guess.
+                    4. Always cite the Document Name(s) and Page Number(s) you used to formulate the answer.
                     """
                     
                     try:
@@ -150,10 +174,7 @@ if check_password():
                         st.info(response.text)
                         st.caption("⚠️ Note: Always verify critical data with the original physical circular.")
                     except Exception as e:
-                        status.update(label="⚠️ Network Busy", state="error", expanded=False)
-                        if "429" in str(e) or "ResourceExhausted" in str(e):
-                            st.error("⏳ The AI servers are currently busy (Free Tier Limit). Please wait 60 seconds and try your question again.")
-                        else:
-                            st.error(f"An unexpected error occurred: {e}")
+                        status.update(label="⚠️ Error", state="error", expanded=False)
+                        st.error(f"An error occurred: {e}")
         else:
             st.warning("Please type a question first.")
