@@ -6,7 +6,8 @@ import google.generativeai as genai
 import io
 import PyPDF2
 
-st.set_page_config(page_title="CBI Silchar - Circular Assistant", page_icon="🏦", layout="centered")
+# --- UI THEME UPGRADE ---
+st.set_page_config(page_title="CBI Circular Assistant", page_icon="🏦", layout="wide")
 
 # --- PUT YOUR FOLDER ID HERE ---
 FOLDER_ID = "1gyuybMhyMQp3N-N2cmSrOgKBUf6iQ85y"
@@ -21,12 +22,14 @@ def check_password():
         else:
             st.session_state["password_correct"] = False
 
-    if "password_correct" not in st.session_state:
-        st.text_input("Enter Branch Password", type="password", on_change=password_entered, key="password")
-        return False
-    elif not st.session_state["password_correct"]:
-        st.text_input("Enter Branch Password", type="password", on_change=password_entered, key="password")
-        st.error("Incorrect Password.")
+    if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.title("🔒 Branch Login")
+            st.write("Please enter the branch password to access internal circulars.")
+            st.text_input("Password", type="password", on_change=password_entered, key="password")
+            if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+                st.error("Incorrect Password.")
         return False
     return True
 
@@ -42,14 +45,14 @@ def get_drive_service():
     )
     return build('drive', 'v3', credentials=creds)
 
-# This reads all your PDFs once and saves the text in memory so it's fast!
+# NEW: Reads PDFs and separates them page-by-page so we don't overload the AI
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_all_circular_text():
+def get_all_pdf_pages():
     service = get_drive_service()
     results = service.files().list(q=f"'{FOLDER_ID}' in parents and mimeType='application/pdf'", fields="files(id, name)").execute()
     files = results.get('files', [])
     
-    all_text = ""
+    all_pages = []
     for file in files:
         request = service.files().get_media(fileId=file['id'])
         fh = io.BytesIO()
@@ -60,51 +63,78 @@ def get_all_circular_text():
             
         fh.seek(0)
         reader = PyPDF2.PdfReader(fh)
-        file_text = ""
-        for page in reader.pages:
+        for page_num, page in enumerate(reader.pages):
             text = page.extract_text()
-            if text: file_text += text + "\n"
-        
-        all_text += f"\n--- Document: {file['name']} ---\n{file_text}\n"
+            if text:
+                all_pages.append(f"--- Document: {file['name']} (Page {page_num + 1}) ---\n{text}")
+                
+    return all_pages
+
+# NEW: Acts like a librarian, picking only the relevant pages to send to the AI
+def find_relevant_pages(query, all_pages):
+    # Remove common words to find the real keywords
+    stopwords = ['what', 'is', 'the', 'for', 'a', 'an', 'of', 'in', 'to', 'and', 'how', 'are', 'rules', 'policy', 'about', 'details']
+    keywords = [word.lower() for word in query.replace('?', '').split() if word.lower() not in stopwords and len(word) > 2]
     
-    return all_text
+    relevant_pages = []
+    for page in all_pages:
+        # If the page contains any of our question's keywords, grab it
+        if any(kw in page.lower() for kw in keywords):
+            relevant_pages.append(page)
+            
+    # Only return the top 10 most relevant pages so we don't crash the free AI limit
+    return "\n".join(relevant_pages[:10])
 
 # --- APP INTERFACE ---
 if check_password():
-    st.title("🏦 Smart Circular Assistant")
-    st.write("Ask natural questions about the bank's policies.")
+    
+    with st.sidebar:
+        st.title("🏦 CBI Silchar")
+        st.caption("Internal Branch Tool")
+        st.divider()
+        
+        st.subheader("📁 Filter Context")
+        departments = {
+            "Operations": ["Account Opening", "KYC Norms", "Cash Handling", "Clearing"],
+            "Credit": ["Retail Loans / Housing", "Agriculture / KCC", "MSME", "Recovery"],
+            "HR or Staff Benefits": ["Leave Policy", "LFC / Travel", "Medical Benefits"],
+            "Audit": ["Concurrent Audit", "Compliance Reports", "Risk Management"],
+            "Miscellaneous": ["General Admin", "IT Security", "Premises", "Deceased Settlement"]
+        }
+        selected_dept = st.selectbox("Main Department", list(departments.keys()))
+        selected_sub = st.selectbox("Sub-Department", departments[selected_dept])
+        
+        st.divider()
+        st.success("🟢 System Online")
 
-    # Department Menus
-    departments = {
-        "Operations": ["Account Opening", "KYC Norms", "Cash Handling", "Clearing"],
-        "Credit": ["Retail Loans / Housing", "Agriculture / KCC", "MSME", "Recovery"],
-        "HR or Staff Benefits": ["Leave Policy", "LFC / Travel", "Medical Benefits"],
-        "Audit": ["Concurrent Audit", "Compliance Reports", "Risk Management"],
-        "Miscellaneous": ["General Admin", "IT Security", "Premises", "Deceased Settlement"]
-    }
-
-    col1, col2 = st.columns(2)
-    with col1:
-        selected_dept = st.selectbox("Select Department", list(departments.keys()))
-    with col2:
-        selected_sub = st.selectbox("Select Sub-Department", departments[selected_dept])
+    st.title("Smart Circular Assistant ✨")
+    st.markdown("*Your AI-powered guide for internal banking policies and operational guidelines.*")
+    
+    with st.expander("📖 How to use this tool"):
+        st.write("1. **Filter** your department on the left sidebar so the AI knows the context.\n2. **Type** your query in plain English below.\n3. The AI will read the latest branch PDFs and summarize the rules for you.")
 
     st.divider()
 
-    # The AI Chat Interface
-    query = st.text_area(f"🔍 Ask your question regarding {selected_sub}:", placeholder="e.g., What are the rules for settling a deceased account without a legal heir certificate?")
+    st.subheader(f"Ask a question regarding: **{selected_sub}**")
+    query = st.text_input("🔍 Question:", placeholder="e.g., What are the required annexes for settling a deceased claim without a nominee?")
     
-    if st.button("Ask AI", use_container_width=True):
+    if st.button("Ask the AI 🤖", type="primary", use_container_width=True):
         if query:
-            with st.spinner("The AI is reading the circulars and typing an answer..."):
-                try:
-                    # 1. Grab all the text from the PDFs
-                    document_text = get_all_circular_text()
-                    
-                    # 2. Give the AI strict instructions
+            with st.status("Analyzing bank policies...", expanded=True) as status:
+                st.write("📥 Loading PDFs from Google Drive...")
+                all_pages = get_all_pdf_pages()
+                
+                st.write("🔍 Scanning for relevant paragraphs...")
+                document_text = find_relevant_pages(query, all_pages)
+                
+                if not document_text.strip():
+                    status.update(label="⚠️ No matches found", state="error", expanded=False)
+                    st.warning("I couldn't find any circulars mentioning those exact keywords. Try simplifying your search words.")
+                else:
+                    st.write("🧠 Reading policies and generating response...")
                     prompt = f"""
                     You are a professional banking assistant for the Central Bank of India. 
-                    Read the following official bank circulars carefully.
+                    Read the following official bank circular pages carefully.
                     
                     BANK CIRCULARS:
                     {document_text}
@@ -112,17 +142,16 @@ if check_password():
                     USER QUESTION: {query}
                     
                     INSTRUCTIONS:
-                    1. Answer the user's question clearly and professionally based ONLY on the provided circular text.
-                    2. If the answer is not contained in the text, you MUST say "I cannot find the answer to this in the uploaded circulars." Do not guess or make up bank policies.
-                    3. Mention the name of the document you found the answer in.
+                    1. Answer the user's question clearly, professionally, and step-by-step based ONLY on the provided circular text.
+                    2. If the answer is not contained in the text, you MUST say "I cannot find the exact answer to this in the uploaded circulars." Do not guess.
+                    3. Always mention the Document Name and Page Number you got the answer from.
                     """
-                    
-                    # 3. Get the answer
                     response = model.generate_content(prompt)
-                    st.success("Answer Generated:")
-                    st.write(response.text)
                     
-                except Exception as e:
-                    st.error(f"An error occurred: {e}")
+                    status.update(label="✅ Answer Generated!", state="complete", expanded=False)
+                
+                    st.markdown("### 📋 Official Policy Breakdown:")
+                    st.info(response.text)
+                    st.caption("⚠️ Note: Always verify critical data with the original physical circular.")
         else:
             st.warning("Please type a question first.")
