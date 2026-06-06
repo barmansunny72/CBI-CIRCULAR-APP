@@ -37,7 +37,7 @@ def check_password():
 # --- AI & DRIVE SETUP (UPGRADED TO PRO MODEL) ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 # Using the PRO model because you are on the paid tier for maximum intelligence
-model = genai.GenerativeModel('gemini-1.5-pro')
+model = genai.GenerativeModel('gemini-2.5-pro')
 
 @st.cache_resource
 def get_drive_service():
