@@ -22,7 +22,7 @@ FOLDER_MAP = {
     "Credit Monitoring": "1h1ZIImScWAIycVeF_eLEdO95o7JhahQ4"
 }
 
-# --- 🗄️ DATABASE SETUP (Local JSON Files) ---
+# --- 🗄️ DATABASE SETUP ---
 USERS_FILE = "staff_users.json"
 CHATS_FILE = "staff_chats.json"
 
@@ -48,20 +48,16 @@ def get_drive_service():
     )
     return build('drive', 'v3', credentials=creds)
 
-# RECURSIVE DRIVE SCANNER (Reads main files AND sub-folders automatically)
 def get_all_pdf_files_in_folder(service, folder_id):
     files = []
-    # 1. Get all PDFs in the current folder
     query_pdfs = f"'{folder_id}' in parents and mimeType='application/pdf' and trashed=false"
     results = service.files().list(q=query_pdfs, fields="files(id, name)").execute()
     files.extend(results.get('files', []))
     
-    # 2. Get all Sub-folders
     query_folders = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
     results = service.files().list(q=query_folders, fields="files(id, name)").execute()
     subfolders = results.get('files', [])
     
-    # 3. Recursively search inside those sub-folders
     for sub in subfolders:
         files.extend(get_all_pdf_files_in_folder(service, sub['id']))
         
@@ -90,7 +86,7 @@ def get_all_pdf_pages(active_folder_id):
                 
     return all_pages
 
-def find_relevant_pages(query, all_pages, selected_sub):
+def find_relevant_pages(query, all_pages, context_string):
     stopwords = ['what', 'is', 'the', 'for', 'a', 'an', 'of', 'in', 'to', 'and', 'how', 'are', 'about', 'details', 'policy', 'rules', 'guidelines', 'bank', 'branch', 'staff', 'central', 'maximum', 'minimum', 'amount']
     clean_words = [word.lower() for word in query.replace('?', '').split() if len(word) > 2]
     keywords = [w for w in clean_words if w not in stopwords]
@@ -111,7 +107,8 @@ def find_relevant_pages(query, all_pages, selected_sub):
             for pair in paired_words:
                 if pair in page_lower: score += 500 
                 if pair in first_line: score += 2000 
-            if selected_sub.lower() in first_line or selected_sub.lower() in page_lower:
+            # Check if the context string (e.g., "Master Credit Policy") is in the page
+            if context_string.lower() in first_line or context_string.lower() in page_lower:
                 score += 300
             scored_pages.append({'score': score, 'text': page})
             
@@ -132,7 +129,6 @@ if "user_data" not in st.session_state:
         login_pf = st.text_input("PF Number (6 digits)", key="login_pf")
         if st.button("Log In", type="primary"):
             if login_pf in users_db:
-                # Load user data and their specific chat history
                 st.session_state["user_data"] = {"name": users_db[login_pf], "pf": login_pf}
                 all_chats = load_data(CHATS_FILE)
                 st.session_state["messages"] = all_chats.get(login_pf, [])
@@ -155,7 +151,7 @@ if "user_data" not in st.session_state:
                 save_data(USERS_FILE, users_db)
                 st.success(f"✅ Account created successfully for {reg_name}! You can now log in.")
 
-# --- 2. THE MAIN APP (Only visible if logged in) ---
+# --- 2. THE MAIN APP ---
 else:
     user_name = st.session_state["user_data"]["name"]
     pf_num = st.session_state["user_data"]["pf"]
@@ -172,48 +168,55 @@ else:
         st.divider()
         
         st.subheader("📁 Step 1: Select Context")
+        
         departments = {
-            "Recovery": ["NPA Management", "SARFAESI", "Compromise Settlement", "Legal"],
-            "Operations": ["Account Opening", "KYC Norms", "Cash Handling", "Clearing"],
-            "Miscellaneous": ["General Admin", "Premises", "Deceased Settlement"],
-            "IT/Digital Section": ["IT Security", "Hardware/Software", "Digital Banking", "CBS"],
-            "Human Resource/Staff welfare": ["Leave Policy", "LFC / Travel", "Medical Benefits", "Transfers"],
-            "Credit/Advance": ["Retail Loans / Housing", "Retail Loans / Personal", "Agriculture", "MSME", "Master Credit Policy"],
-            "Credit Monitoring": ["SMA", "Audit Reports", "Review/Renewal"]
+            "Recovery": [],
+            "Operations": [],
+            "Miscellaneous": [],
+            "IT/Digital Section": [],
+            "Human Resource/Staff welfare": [],
+            "Credit/Advance": ["Retail", "MSME", "Agri", "Master Credit Policy"],
+            "Credit Monitoring": []
         }
+        
         selected_dept = st.selectbox("Main Department", list(departments.keys()))
-        selected_sub = st.selectbox("Sub-Department", departments[selected_dept])
+        
+        if departments[selected_dept]:
+            # Updated UI text to make more sense to staff
+            selected_sub = st.selectbox("Category / Specific Policy", departments[selected_dept])
+            context_string = selected_sub
+        else:
+            selected_sub = None
+            context_string = selected_dept
+            
         active_folder_id = FOLDER_MAP[selected_dept]
 
     # --- 3. THE CHATBOT UI ---
     st.title(f"Assistant: {selected_dept}")
-    st.markdown(f"*Searching within: **{selected_sub}***")
+    if selected_sub:
+        st.markdown(f"*Searching within: **{selected_sub}***")
     st.divider()
     
-    # Display the previous chat history on the screen
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # Step 2: The Chat Input box at the bottom
-    query = st.chat_input(f"Ask a question regarding {selected_sub}...")
+    search_label = selected_sub if selected_sub else selected_dept
+    query = st.chat_input(f"Ask a question regarding {search_label}...")
 
     if query:
-        # 1. Add user question to memory and screen
         st.session_state.messages.append({"role": "user", "content": query})
         with st.chat_message("user"):
             st.markdown(query)
             
-        # 2. AI Thinking Phase
         with st.chat_message("assistant"):
             with st.status(f"Searching {selected_dept} archives...", expanded=True) as status:
                 st.write("📥 Reading policies (including sub-folders)...")
                 all_pages = get_all_pdf_pages(active_folder_id)
                 
                 st.write("🔍 Finding relevant rules...")
-                document_text = find_relevant_pages(query, all_pages, selected_sub)
+                document_text = find_relevant_pages(query, all_pages, context_string)
                 
-                # Compress chat memory to feed to the AI
                 history_text = ""
                 for msg in st.session_state.messages[-6:]: 
                     role_name = user_name if msg["role"] == "user" else "AI"
@@ -226,8 +229,8 @@ else:
                     st.write("🧠 Reading chat history and formulating response...")
                     
                     prompt = f"""
-                    You are a highly intelligent banking assistant for the Central Bank of India, Silchar Branch.
-                    You are currently assisting staff member: {user_name} (PF: {pf_num}). Be professional and helpful.
+                    You are Gemini, acting as a highly intelligent, friendly, and conversational banking assistant for the Central Bank of India, Silchar Branch.
+                    You are speaking directly with staff member: {user_name} (PF: {pf_num}). Talk to them naturally, like a helpful colleague.
                     
                     --- RECENT CONVERSATION MEMORY ---
                     {history_text}
@@ -238,10 +241,10 @@ else:
                     USER'S NEW QUESTION: {query}
                     
                     INSTRUCTIONS:
-                    1. Answer the question based ONLY on the provided Bank Circulars. 
-                    2. Read the Recent Conversation Memory. If the user is asking a follow-up question, use the memory to understand the context.
-                    3. Always cite the Document Name(s) and Page Number(s).
-                    4. If the answer is not in the circulars, say "I cannot find the exact answer to this."
+                    1. Maintain your natural, conversational Gemini personality, but when it comes to facts and bank rules, you MUST base your answer strictly on the provided Bank Circulars. 
+                    2. Read the Recent Conversation Memory to understand the context of follow-up questions.
+                    3. Always cite the Document Name(s) and Page Number(s) so {user_name} can verify the information.
+                    4. If the answer is not in the circulars, politely say that you cannot find the exact answer in the current documents.
                     """
                     
                     try:
@@ -249,10 +252,8 @@ else:
                         status.update(label="✅ Answer Generated!", state="complete", expanded=False)
                         st.markdown(response.text)
                         
-                        # Save the AI's answer to the active session
                         st.session_state.messages.append({"role": "assistant", "content": response.text})
                         
-                        # 💾 DATABASE SAVE: Permanently write the updated chat history to the JSON file
                         all_chats = load_data(CHATS_FILE)
                         all_chats[pf_num] = st.session_state.messages
                         save_data(CHATS_FILE, all_chats)
